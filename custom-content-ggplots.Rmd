@@ -1,0 +1,216 @@
+---
+title: "Rental Vacancy Charting"
+author: "Alec A. Nathan"
+output: html_document
+---
+
+###Setup
+
+  Load your required packages and API keys. As a practice, please store API keys in your .Renviron this will prevent you from accidentally uploading sensitive information to a code repository.
+  
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(plotly)
+library(janitor)
+library(ggplot2)
+
+#Macro Factor Libraries
+library(fredr)
+library(tidycensus)
+
+#Data Visualization Extras
+library(png)
+library(ggthemes)
+library(showtext)
+
+
+#Load Passwords and Keys from Environment
+FRED_API_KEY <- 
+  Sys.getenv("FRED_API_KEY")
+
+CENSUS_API_KEY <- 
+  Sys.getenv("CENSUS_API_KEY")
+
+#Set Period For Observations
+start_period <- ymd('2000-01-01')
+
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+###Load Data from FRED
+
+Load in our raw data from FRED. If you rerun this script in three months another quarter of data will be appended.
+
+```{r}
+vacancy_data_fred_tbl <- fredr_series_observations(series_id = "RRVRUSQ156N") %>% 
+  select(date,value) %>% 
+  filter(date >= start_period) %>% 
+  #Values come in as whole numbers, not percentages. We must mutate our value column to the appropriate scale.
+  mutate(value = value/100)
+```
+
+###Simple Chart
+
+If we define our axes and pass through a geometry we can create a very simple chart.
+
+```{r}
+simple_chart <- vacancy_data_fred_tbl %>% 
+  ggplot(aes(x=date,y=value))+
+  geom_line()
+```
+
+###Add Axis Formatting & Titles
+
+Names and formatting help users interpret data
+
+```{r}
+formatted_axes <- simple_chart +
+  scale_x_date(name         = "DATE",
+               date_breaks  = "3 years",
+               date_labels  = "%Y",
+               minor_breaks = NULL)+
+  scale_y_continuous(name   = "VACANCY PERCENT",
+                     labels = scales::percent)
+```
+
+Adding a title allows users to contextualize the data and ascertain the source of the data.
+
+```{r}
+added_title <- formatted_axes +
+  ggtitle(label    = "RENTAL VACANCY RATE IN THE UNITED STATES",
+          subtitle = "RETRIEVED FROM FRED, FEDERAL RESERVE BANK OF ST. LOUIS")
+```
+
+###Example themes and applying the Minimal Theme
+
+Prebuilt themes in GGPLOT2 are a great start, but not the end-all, be-all of a bespoke reporting solution.
+
+```{r}
+ggthemes_example_538 <- added_title + 
+  theme_fivethirtyeight()
+
+ggthemes_example_economist <- added_title +
+  theme_economist()
+
+ggplot_minimal <- added_title +
+  theme_minimal()
+```
+
+
+###Recession Shading Function
+
+The function below can be added as a layer to a gg object. Thank you Jonathan Regenstein!
+
+```{r}
+#Load Recession Shading for Graphs
+recession_shade_fun <- function(color_chosen = "darkgray", start_date = start_period){ 
+  "USREC" %>% 
+  tq_get(get = "economic.data", from = start_date) %>% 
+  select(date, recession_flag = price) %>% 
+  mutate(recession_label = case_when(recession_flag == 1 & lag(recession_flag == 0) ~ str_glue("{year(date)} recession"), 
+         TRUE ~ NA_character_)) %>% 
+  filter(recession_flag == 1) %>% 
+  fill(recession_label, .direction = "down") %>% 
+  group_by(recession_label) %>% 
+  slice(1, n()) %>% 
+  select(-recession_flag) %>% 
+  mutate(start = case_when(date == min(date) ~ date,
+                           TRUE ~ NA_Date_),
+         end = case_when(date == max(date) ~ date,
+                         TRUE ~ NA_Date_),
+         end = lead(end)
+         ) %>% 
+  filter(!is.na(start)) %>% 
+  select(-date) %>% 
+    geom_rect(data = ., 
+            inherit.aes = F, 
+            aes(xmin = start, 
+                xmax = end, 
+                ymin = -Inf, 
+                ymax = +Inf), 
+            fill = color_chosen, 
+            alpha = 0.4)
+}
+```
+
+###Adding More Formatting
+
+Let's add formatting to our plot. The theme function gives you endless customization capabilities.
+
+```{r}
+ggplot_w_correct_line <- vacancy_data_fred_tbl %>% 
+  ggplot(aes(x=date,y=value)) +
+  geom_line(color     = "#9BC2E6",
+            linewidth = 2) +
+  scale_x_date(name         = "DATE",
+               date_breaks  = "3 years",
+               date_labels  = "%Y",
+               minor_breaks = NULL)+
+  scale_y_continuous(name   = "VACANCY PERCENT",
+                     labels = scales::percent) +
+  ggtitle(label    = "RENTAL VACANCY RATE IN THE UNITED STATES",
+          subtitle = "RETRIEVED FROM FRED, FEDERAL RESERVE BANK OF ST. LOUIS")+
+  theme_minimal()+
+  theme(panel.grid       = element_line(colour      = "white"),
+        panel.background = element_rect(fill        = "white"),
+        panel.border     = element_rect(colour      = "white",
+                                    fill            = NA),
+        plot.background  = element_rect(fill        = "#E8F2FA",
+                                       colour       = "#E8F2FA"))+
+  recession_shade_fun()+
+  labs(caption = "RECESSIONS SHADED IN GREY")
+```
+
+###Loading Fonts to Use
+
+Let's prepare and load our Google Font.
+
+```{r}
+trace(grDevices::png, exit = quote({
+    showtext::showtext_begin()
+}), print = FALSE)
+
+font_add_google(name = "Montserrat", family = "Montserrat")
+```
+
+###Applying Fonts
+
+Let's pass our newly loaded font through our theme. The font family is the most important attribute here.
+
+```{r}
+ggplot_w_font <- ggplot_w_correct_line+
+  theme(text = element_text(family = "Montserrat"))
+```
+
+###Add Logo to Local Environment
+
+Store your logo in your directory. From here the get_png function will make it accessible to GGPlot2.
+
+```{r}
+get_png <- function(filename) {
+  grid::rasterGrob(png::readPNG(filename), interpolate = TRUE)
+}
+
+logo <- get_png("Riverside Logo.png")
+test_logo <- grid::roundrectGrob()
+```
+
+###Place Logo and Relocate Caption
+
+Our caption and logo are overlapping. Le'ts use the plot.caption and plot.caption.position arguments to move the caption to the left.
+
+```{r}
+ggplot_final <- ggplot_w_font +
+  annotation_custom(logo,
+                    xmin = ymd('2016-07-01'),
+                    xmax = ymd('2022-12-31'),
+                    ymin = .025,
+                    ymax = .05)+
+  coord_cartesian(clip = "off")+
+  theme(plot.margin            = unit(c(1,1,2.75,1),"lines"),
+        plot.caption.position = "plot",
+        plot.caption          = element_text(hjust = 0))
+```
