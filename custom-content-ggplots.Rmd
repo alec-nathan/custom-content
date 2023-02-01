@@ -194,7 +194,7 @@ get_png <- function(filename) {
   grid::rasterGrob(png::readPNG(filename), interpolate = TRUE)
 }
 
-logo <- get_png("Riverside Logo.png")
+logo <- get_png("linkedinaan.png")
 test_logo <- grid::roundrectGrob()
 ```
 
