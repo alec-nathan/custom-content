@@ -1,0 +1,287 @@
+---
+title: "Asset Management Daily Briefing"
+author: "Alec A. Nathan"
+output: html_document
+---
+
+###Setup
+
+  The purpose of this file is to put crucial daily information in front of the asset management team. This file can send separate emails to each asset manager based on their market/regional coverage. 
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(scales)
+library(readxl)
+library(openxlsx)
+library(readr)
+library(janitor)
+library(tigris)
+library(sf)
+library(DBI)
+library(curl)
+library(httr)
+library(devtools)
+library(stringr)
+library(dplyr)
+library(gt)
+library(gtExtras)
+library(blastula)
+library(glue)
+
+
+
+knitr::opts_chunk$set(echo = F)
+```
+
+###GGPlot Font for Theming
+```{r}
+library(sysfonts)
+
+trace(grDevices::png, exit = quote({
+    showtext::showtext_begin()
+}), print = FALSE)
+
+font_add_google(name = "Montserrat", family = "Montserrat")
+```
+
+###Create the Function
+
+```{r}
+asset_manager_briefing <- function(asset_manager_name,
+                                   asset_manager_markets,
+                                   asset_manager_funds){
+
+#The date will be used throughout the email
+formatted_date        <- format(today(),"%a %b %d, %Y")
+
+asset_manager_markets_string <- asset_manager_markets %>% toString()
+
+###Summary Data from RDA_Sandbox
+
+#####AUM Activity Status
+aum_activity_chart <- data.frame("property_id"  = c('100000', '100001', '100002', '100003', '100004', '100005', '100006', '100007', '100008', '100009', '100010', '100011', '100012', '100013', '100014', '100015', '100016', '100017', '100018', '100019', '100020', '100021', '100022', '100023', '100024', '100025', '100026', '100027', '100028', '100029', '100030', '100031', '100032', '100033', '100034', '100035'),
+                                 "market"       = c('Market 1', 'Market 3', 'Market 3', 'Market 3', 'Market 2', 'Market 1', 'Market 2', 'Market 1', 'Market 1', 'Market 1', 'Market 2', 'Market 1', 'Market 3', 'Market 1', 'Market 2', 'Market 2', 'Market 2', 'Market 2', 'Market 3', 'Market 1', 'Market 1', 'Market 1', 'Market 3', 'Market 1', 'Market 3', 'Market 1', 'Market 1', 'Market 1', 'Market 3', 'Market 1', 'Market 3', 'Market 2', 'Market 2', 'Market 2', 'Market 3', 'Market 3'),
+                                 "activity"     = c('Pending Acquisition', 'Pending Acquisition', 'Pending Acquisition', 'Turnover', 'Construction', 'Occupied', 'Turnover', 'Construction', 'Marketing', 'Turnover', 'Marketing', 'Occupied', 'Marketing', 'Occupied', 'Marketing', 'Occupied', 'Marketing', 'Occupied', 'Pending Acquisition', 'Pending Acquisition', 'Pending Acquisition', 'Marketing', 'Marketing', 'Construction', 'Marketing', 'Construction', 'Occupied', 'Marketing', 'Marketing', 'Pending Acquisition', 'Marketing', 'Marketing', 'Turnover', 'Marketing', 'Marketing', 'Occupied'),
+                                 "fund"         = c('Fund B', 'Fund A', 'Fund B', 'Fund B', 'Fund A', 'Fund B', 'Fund A', 'Fund A', 'Fund A', 'Fund B', 'Fund B', 'Fund A', 'Fund B', 'Fund B', 'Fund B', 'Fund A', 'Fund A', 'Fund A', 'Fund A', 'Fund B', 'Fund A', 'Fund A', 'Fund B', 'Fund B', 'Fund B', 'Fund A', 'Fund A', 'Fund A', 'Fund B', 'Fund B', 'Fund A', 'Fund A', 'Fund B', 'Fund A', 'Fund B', 'Fund B')) %>% 
+  filter(market %in% asset_manager_markets,
+         fund   %in% asset_manager_funds,
+         !is.na(property_id),
+         !is.na(activity)) %>% 
+  group_by(activity) %>% 
+  summarize(assets = n()) %>% 
+  ungroup() %>% 
+  arrange(activity) %>% 
+  mutate(activity = as.factor(activity)) %>% 
+  ggplot(aes(x=activity,y=assets))+
+  geom_col(fill = "#9BC2E6")+
+  scale_x_discrete(name = NULL)+
+  scale_y_continuous(name = "# of Assets")+
+  labs(title    = str_glue("Activity Statuses for {asset_manager_markets_string}"),
+       subtitle = str_glue("as of {formatted_date}."))+
+  theme_minimal()+
+  theme(panel.grid       = element_line(colour      = "white"),
+        panel.background = element_rect(fill        = "white"),
+        panel.border     = element_rect(colour      = "white",
+                                    fill            = NA),
+        plot.background  = element_rect(fill        = "#E8F2FA",
+                                       colour       = "#E8F2FA"))+
+  theme(text = element_text(family = "Montserrat"))
+
+activity_for_email <- add_ggplot(aum_activity_chart)
+
+#####Stabilized Data
+aum_stabilized_count <- data.frame("property_id"  = c('100000', '100001', '100002', '100003', '100004', '100005', '100006', '100007', '100008', '100009', '100010', '100011', '100012', '100013', '100014', '100015', '100016', '100017', '100018', '100019', '100020', '100021', '100022', '100023', '100024', '100025', '100026', '100027', '100028', '100029', '100030', '100031', '100032', '100033', '100034', '100035'),
+                                 "market"       = c('Market 1', 'Market 3', 'Market 3', 'Market 3', 'Market 2', 'Market 1', 'Market 2', 'Market 1', 'Market 1', 'Market 1', 'Market 2', 'Market 1', 'Market 3', 'Market 1', 'Market 2', 'Market 2', 'Market 2', 'Market 2', 'Market 3', 'Market 1', 'Market 1', 'Market 1', 'Market 3', 'Market 1', 'Market 3', 'Market 1', 'Market 1', 'Market 1', 'Market 3', 'Market 1', 'Market 3', 'Market 2', 'Market 2', 'Market 2', 'Market 3', 'Market 3'),
+                                 "activity"     = c('Pending Acquisition', 'Pending Acquisition', 'Pending Acquisition', 'Turnover', 'Construction', 'Occupied', 'Turnover', 'Construction', 'Marketing', 'Turnover', 'Marketing', 'Occupied', 'Marketing', 'Occupied', 'Marketing', 'Occupied', 'Marketing', 'Occupied', 'Pending Acquisition', 'Pending Acquisition', 'Pending Acquisition', 'Marketing', 'Marketing', 'Construction', 'Marketing', 'Construction', 'Occupied', 'Marketing', 'Marketing', 'Pending Acquisition', 'Marketing', 'Marketing', 'Turnover', 'Marketing', 'Marketing', 'Occupied'),
+                                 "fund"         = c('Fund B', 'Fund A', 'Fund B', 'Fund B', 'Fund A', 'Fund B', 'Fund A', 'Fund A', 'Fund A', 'Fund B', 'Fund B', 'Fund A', 'Fund B', 'Fund B', 'Fund B', 'Fund A', 'Fund A', 'Fund A', 'Fund A', 'Fund B', 'Fund A', 'Fund A', 'Fund B', 'Fund B', 'Fund B', 'Fund A', 'Fund A', 'Fund A', 'Fund B', 'Fund B', 'Fund A', 'Fund A', 'Fund B', 'Fund A', 'Fund B', 'Fund B'),
+                                 "stabilization_date" = c('', '2023-02-12', '', '2023-02-10', '', '2023-02-12', '', '', '', '', '', '', '2023-02-11', '', '', '2023-02-10', '', '', '', '', '', '2023-02-11', '2023-02-13', '', '', '', '', '2023-02-10', '', '', '', '', '2023-02-12', '', '', '')) %>%
+  filter(market %in% asset_manager_markets,
+         fund   %in% asset_manager_funds,
+         !is.na(property_id),
+         !is.na(activity)) %>% 
+  mutate(across(contains("date"),~as_date(.))) %>% 
+  filter(stabilization_date >= today()-7 &
+           stabilization_date < today()) %>% 
+  summarize(count = n()) %>% 
+  pull() %>% 
+  as.numeric()
+
+
+#####Trailing 3 Month Collections
+
+
+collections_gt <- data.frame("report_period" = c('2022-12-01' ,'2023-01-01' ,'2023-02-01' ,'2022-12-01' ,'2023-01-01' ,'2023-02-01' ,'2022-12-01' ,'2023-01-01' ,'2023-02-01'),
+                             "market"        = c('Market 1', 'Market 1', 'Market 1', 'Market 2', 'Market 2', 'Market 2', 'Market 3', 'Market 3', 'Market 3'),
+                             "gross_charges" = c(10000, 10500, 11000, 8000, 7900, 8200, 15000, 15000, 17950),
+                             "0-30 days"     = c(0.95, 0.95, 0.87, 0.92, 0.93, 0.84, 1, 1, 0.95),
+                             "CTD"           = c(1, 1, 0.87, 0.95, 0.97, 0.84, 1, 1, 0.95)) %>% 
+  select(report_period,
+         market,
+         gross_charges,
+         X0.30.days,
+         CTD) %>% 
+  rename("Month"         = report_period,
+         "Market"        = market,
+         "Gross Charges" = gross_charges,
+         "0-30 days"     = X0.30.days) %>% 
+  gt() %>% 
+  fmt_currency(columns      = 3,
+               currency     = "USD",
+               use_subunits = F,
+               use_seps     = T) %>% 
+  fmt_percent(columns = 4:5,
+              decimals = 1,
+              drop_trailing_zeros = T,
+              drop_trailing_dec_mark = T)%>% 
+  fmt_date(columns = 1,
+           date_style = "yMMM") %>% 
+  opt_table_font(font = google_font("Chivo")) %>% 
+  tab_options(column_labels.background.color = "#9BC2E6",
+              heading.align                  = "Left",
+              heading.title.font.size        = 24,
+              heading.title.font.weight      = "bold") %>% 
+  tab_header(title = "Base Rent Collections") %>% 
+  as_raw_html()
+
+
+#####Work Order Text Description
+
+
+#Pull in Work Orders
+
+
+created_wos <- 17
+
+open_unapproved_trailing_7 <- 4
+
+open_unapproved_turns_t7 <- 6
+
+closed_t7_count <- 4
+
+closed_t7_cost <- 13000 %>% 
+  as.numeric() %>% 
+  dollar(accuracy = 1)
+
+closed_t7_turn_count <- 3
+
+closed_t7_turn_cost <- 8000 %>% 
+  as.numeric() %>% 
+  dollar(accuracy = 1)
+  
+
+wo_paragraph <- str_glue("In the past 7 days, {created_wos}  work orders have been created in {asset_manager_markets_string}. This includes {open_unapproved_trailing_7} open and unapproved work orders, of which {open_unapproved_turns_t7} are for turnovers. Across the same time period, {closed_t7_count} approved maintenance work orders were completed, at a cost of {closed_t7_cost}. There were {closed_t7_turn_count} turns completed in this time period, costing {closed_t7_turn_cost}.")
+
+
+#####Active Marketing & Expiring Lease Text Description
+wall_count <- 14
+
+unpublished_wall_count <- 3
+
+ending_leases <- 7
+
+t7_move_ins <- 4
+
+t7_contract_rent <- 1500 %>% 
+  as.numeric()%>% 
+  dollar(accuracy = 1)
+
+leasing_paragraph <- str_glue("There are {wall_count} assets on the marketing wall in your markets. {unpublished_wall_count} of these assets are not published to the marketing wall. This figure could include recent handoffs, off-market assets, and assets with draft leases. {ending_leases} leases are expiring in the next 7 days.")
+
+#####Move-In/Stabilization Paragraph
+stab_paragraph <- str_glue("In the last seven days, {aum_stabilized_count} assets have stabilized. There have been a total of {t7_move_ins} move-ins (excluding illegal occupants) with an average contract rent of {t7_contract_rent},")
+
+#####Aged Reno/Turns Text Description
+
+######Turns
+
+
+total_turns <- 3
+
+#Aged Turns
+turns_45plus <- 0
+
+#Oldest Turn
+oldest_turn_age <- 25
+
+#Oldest Turn WO#
+oldest_turn_wo <- "WO# 12345"
+
+#Oldest Turn Estimated Cost
+oldest_turn_cost <- 6250 %>% 
+  as.numeric()%>% 
+  dollar(accuracy = 1)
+
+
+######Renovations
+
+#Open Renovations
+count_of_open_renos <- 4
+
+#Oldest Renovation Age
+age_of_oldest_reno <- 65
+
+#Oldest Renovation Total Approved Cost
+cost_of_oldest_reno <- 32000
+  as.numeric()%>% 
+  dollar(accuracy = 1)
+
+#Oldest Renovation Property Id
+oldest_reno_pid <- "100004"
+
+
+######Text Description
+
+
+aging_paragraph <- str_glue("It is important to clear our backlog in turns and reno, as these are a major drag on our portfolio occupancy rates. In your markets, there are {turns_45plus} turn work orders that have aged more than 45 days. The most aged of these work orders ({oldest_turn_wo}) has been open for {oldest_turn_age} days and has an estimated cost of {oldest_turn_cost}.
+                            
+                            On the renovation front, there are {count_of_open_renos} open jobs in your markets. These can be found on the Construction Wall and will not have an Acceptance Date. The most aged renovation has been on the wall for {age_of_oldest_reno} days. This project, associated with the Property Id {oldest_reno_pid}, has incurred {cost_of_oldest_reno} in approved costs.")
+
+
+
+###Drafting the Email
+
+
+email <- compose_email(body = md(glue("{asset_manager_name},
+                                      
+                                      
+                                      Good morning, and welcome to your daily asset management briefing, courtesy of anathan@sylvanroad.com. Today is {formatted_date}, and a lot is going on in {asset_manager_markets_string}. Let's get started.
+                                      
+                                      {wo_paragraph}
+                                      
+                                      {stab_paragraph}
+                                      
+                                      {leasing_paragraph}
+                                      
+                                      In addition, base rent collections are a team priority. Please review the data below at your convenience.
+                                      
+                                      {collections_gt}
+                                      
+                                      {aging_paragraph}
+                                      
+                                      Finally, the big picture is very important. Where are your assets? Is my portfolio growing? Is there a backlog in renovation? This chart should provide some context.
+                                      
+                                      {activity_for_email}
+                                      
+                                      Have a great day,
+                                      
+                                      Alec A. Nathan")))
+
+email %>% 
+  smtp_send(from        = "anathan@sylvanroad.com",
+            to          = "anathan@sylvanroad.com",
+            cc          = c("anathan@sylvanroad.com"),
+            subject     = str_glue("Daily Asset Manager Briefing - {asset_manager_name}"),
+            credentials = creds_file(file = "C:\\Users\\anathan_sylvanroad\\Documents\\gmail_creds"))
+}
+```
+
+###Run the Function
+
+```{r}
+asset_manager_briefing(asset_manager_name = "John Doe",
+                       asset_manager_markets = c("Market 1","Market 2","Market 3"),
+                       asset_manager_funds   = c("Fund A", "Fund B"))
+
+```
