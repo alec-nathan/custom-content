@@ -1,0 +1,261 @@
+---
+title: "Residential Construction Dataset"
+author: "Alec A. Nathan"
+output: html_document
+---
+
+###Setup
+
+  
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(plotly)
+library(janitor)
+library(ggplot2)
+
+#Excel Libraries
+library(openxlsx)
+library(readxl)
+
+#Macro Factor Libraries
+library(fredr)
+
+#Set Period For Observations
+start_period <- ymd('2000-01-01')
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+###Pull in Fred Housing Starts Data
+
+This data is updated monthly and represents privately owned single-unit dwellings that began construction during a given period. Values are expressed in thousands of units
+
+```{r}
+housing_starts <- fredr_series_observations(series_id = "HOUST1F") %>% 
+  select(date,value) %>% 
+  filter(date >= start_period) %>% 
+  mutate(value = value * 1000) %>% 
+  rename("sfr_starts" = value)
+```
+
+###Federal Funds Rate
+
+```{r}
+fed_funds <- fredr_series_observations(series_id = "FEDFUNDS")%>% 
+  select(date,value) %>% 
+  filter(date >= start_period) %>% 
+  mutate(value = value/100) %>% 
+  rename("fed_funds_rate" = value)
+```
+###Initial Master Dataset
+
+```{r}
+macro_master <- housing_starts %>% 
+  left_join(fed_funds)
+```
+
+###Average Length of Time from Start to Completion of New Privately Owned Residential Buildings
+
+```{r}
+url <- "https://www.census.gov/construction/nrc/xls/avg_starttocomp_cust.xls"
+destfile <- "avg_starttocomp_cust.xls"
+curl::curl_download(url,destfile)
+
+construction_timing <- read_excel(destfile,skip = 7) %>% 
+  clean_names() %>% 
+  select(1:2) %>% 
+  slice(-c(1:4)) %>% 
+  slice(1:51) %>% 
+  mutate(x1 = as.numeric(x1)) %>% 
+  rename("date" = x1,
+         "months_to_complete" = total1) %>% 
+  mutate(date = mdy(str_glue("01-01-{date}"))) %>% 
+  filter(date >= start_period)
+```
+
+###Join Reno Data & Fill
+
+```{r}
+macro_master_w_reno <- macro_master %>% 
+  left_join(construction_timing) %>% 
+  fill(months_to_complete)
+```
+
+###Creating our Workbook
+
+#####Data Table for Workbook
+
+```{r}
+macro_for_export <- macro_master_w_reno %>% 
+  rename("Date"                                = date,
+         "SFR Housing Starts"                  = sfr_starts,
+         "Federal Funds Rate"                  = fed_funds_rate,
+         "SFR Months to Complete Construction" = months_to_complete)
+```
+
+#####Definitions Table for Workbook
+
+```{r}
+macro_definitions <- macro_for_export %>% 
+  gather(!Date,key = "Metric Name",value = "Definition") %>% 
+  select(-Date) %>% 
+  distinct(`Metric Name`) %>% 
+  mutate("Definition" = case_when(`Metric Name` == "SFR Housing Starts"                  ~ "U.S. Census Bureau and U.S. Department of Housing and Urban Development, New Privately-Owned Housing Units Started: Single-Family Units [HOUST1F], retrieved from FRED, Federal Reserve Bank of St. Louis. Thousands of Units, Seasonally Adjusted Annual Rate",
+                                  `Metric Name` == "Federal Funds Rate"                  ~ "The federal funds rate is the interest rate at which depository institutions trade federal funds (balances held at Federal Reserve Banks) with each other overnight. When a depository institution has surplus balances in its reserve account, it lends to other banks in need of larger balances. In simpler terms, a bank with excess cash, which is often referred to as liquidity, will lend to another bank that needs to quickly raise liquidity. The rate that the borrowing institution pays to the lending institution is determined between the two banks; the weighted average rate for all of these types of negotiations is called the effective federal funds rate. The effective federal funds rate is essentially determined by the market but is influenced by the Federal Reserve through open market operations to reach the federal funds rate target.",
+                                  `Metric Name` == "SFR Months to Complete Construction" ~ "These tables contain annual statistics on the length of time from start of construction to completion of new private residential buildings in permit-issuing places. Data are obtained from the U.S. Census Bureau's Survey of Construction."),
+         "Source"     = case_when(`Metric Name` == "SFR Housing Starts"                  ~ "Federal Reserve Bank of St. Louis",
+                                  `Metric Name` == "Federal Funds Rate"                  ~ "Board of Governors of the Federal Reserve System (US)",
+                                  `Metric Name` == "SFR Months to Complete Construction" ~ "Residential construction data is comprised of 2 surveys, the Survey of Construction (SOC) and the Building Permits Survey (BPS)."),
+         "Link"       = case_when(`Metric Name` == "SFR Housing Starts"                  ~ "https://fred.stlouisfed.org/series/HOUST1F",
+                                  `Metric Name` == "Federal Funds Rate"                  ~ "https://fred.stlouisfed.org/series/FEDFUNDS",
+                                  `Metric Name` == "SFR Months to Complete Construction" ~ "https://www.census.gov/construction/nrc/index.html"))
+```
+#####Instantiating the Workbook
+
+```{r}
+wb <- createWorkbook()
+
+addWorksheet(wb,
+             sheetName = "Definitions",
+             gridLines = F)
+
+addWorksheet(wb,
+             sheetName = "Data",
+             gridLines = T)
+```
+
+#####Adding Our Data
+
+```{r}
+writeData(wb,
+          sheet = 1,
+          macro_definitions)
+
+writeData(wb,
+          sheet = 2,
+          macro_for_export)
+```
+
+#####Creating Our Styles
+
+```{r}
+header_style <- createStyle(textDecoration = "Bold",
+                            fgFill         = "#9BC2E6",
+                            border         = "bottom",
+                            borderStyle    = openxlsx_getOp("borderStyle","double"))
+
+definition_style <- createStyle(wrapText = T,
+                                valign   = "top",
+                                halign   = "left")
+
+date_style <- createStyle(numFmt = "MMM YYYY")
+
+numeric_style <- createStyle(numFmt = "#,###")
+
+pct_style <- createStyle(numFmt = "Percentage")
+```
+
+#####Applying Our Styles
+
+```{r}
+addStyle(wb,
+         sheet = 1,
+         style = header_style,
+         rows  = 1,
+         cols  = 1:4)
+
+addStyle(wb,
+         sheet      = 1,
+         style      = definition_style,
+         rows       = 2:4,
+         cols       = 1:4,
+         gridExpand = T)
+
+addStyle(wb,
+         sheet = 2,
+         style = header_style,
+         rows  = 1,
+         cols  = 1:4)
+
+addStyle(wb,
+         sheet = 2,
+         style  = date_style,
+         rows  = 2:277,
+         cols  = 1)
+
+addStyle(wb,
+         sheet = 2,
+         style  = numeric_style,
+         rows  = 2:277,
+         cols  = 2)
+
+addStyle(wb,
+         sheet = 2,
+         style  = pct_style,
+         rows  = 2:277,
+         cols  = 3)
+```
+
+#####Adding Filters to Data
+
+```{r}
+addFilter(wb,
+          2,
+          rows = 1,
+          cols = 1:4)
+```
+
+
+#####Setting Column Widths
+
+```{r}
+setColWidths(wb,
+             1,
+             cols = 1,
+             widths = 21)
+
+setColWidths(wb,
+             1,
+             cols = 2,
+             widths = 52)
+
+setColWidths(wb,
+             1,
+             cols = 3,
+             widths = 50)
+
+setColWidths(wb,
+             1,
+             cols = 4,
+             widths = 46)
+
+setColWidths(wb,
+             2,
+             cols = 1,
+             widths = 9)
+
+setColWidths(wb,
+             2,
+             cols = 2,
+             widths = 18)
+
+setColWidths(wb,
+             2,
+             cols = 3,
+             widths = 19)
+
+setColWidths(wb,
+             2,
+             cols = 4,
+             widths = 35)
+```
+
+
+#####Saving the Workbook
+
+```{r}
+saveWorkbook(wb,"SFR Macro Data.xlsx",overwrite = T)
+```
+
