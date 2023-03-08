@@ -1,0 +1,145 @@
+---
+title: "Macro Briefing GT"
+author: "Alec A. Nathan"
+output: html_document
+---
+
+###Setup
+
+  Load your required packages and API keys. As a practice, please store API keys in your .Renviron this will prevent you from accidentally uploading sensitive information to a code repository.
+  
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(janitor)
+library(gt)
+
+#Macro Factor Libraries
+library(fredr)
+
+#Data Table Extras
+library(gtExtras)
+
+
+#Load Passwords and Keys from Environment
+FRED_API_KEY <- 
+  Sys.getenv("FRED_API_KEY")
+
+
+#Set Period For Observations
+start_period <- ymd('2023-02-24')
+
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+###Load Macro Data from FRED
+
+```{r}
+mortgage_30_jumbo <- fredr_series_observations(series_id = "OBMMIJUMBO30YF") %>% 
+  select(date,value) %>% 
+  filter(date >= start_period) %>% 
+  rename(jumbo = value)
+
+mortgage_30_fha <- fredr_series_observations(series_id = "OBMMIFHA30YF") %>% 
+  select(date,value) %>% 
+  filter(date >= start_period) %>% 
+  rename(fha = value)
+
+mortgage_30_subprime <- fredr_series_observations(series_id = "OBMMIC30YFLVGT80FLT680") %>% 
+  select(date,value) %>% 
+  filter(date >= start_period) %>% 
+  rename(subprime = value)
+
+mortgage_rates <- mortgage_30_jumbo %>% 
+  left_join(mortgage_30_fha) %>% 
+  left_join(mortgage_30_subprime)
+```
+
+###Load Quotes from Tidyquant
+
+```{r}
+amh <- tq_get("AMH") %>% 
+  filter(date >= start_period) %>% 
+  select(date,close) %>% 
+  rename(AMH = close)
+
+tcn <- tq_get("TCN") %>% 
+  filter(date >= start_period) %>% 
+  select(date,close) %>% 
+  rename(TCN = close)
+
+fmcc <- tq_get("FMCC") %>% 
+  filter(date >= start_period) %>% 
+  select(date,close) %>% 
+  rename(FMCC = close)
+
+equity_quotes <- amh %>% 
+  left_join(tcn) %>% 
+  left_join(fmcc)
+```
+
+###Create Master Dataframe
+
+```{r}
+macro_master <- mortgage_rates %>% 
+  left_join(equity_quotes)
+```
+
+###Create the gt
+
+```{r}
+display_date <- today() %>% format("%A, %b %d, %Y")
+
+macro_master_gt <- 
+  macro_master %>% 
+  gt() %>% 
+  tab_header(title    = str_glue("Market Summary - {display_date}") %>% toupper(),
+             subtitle = ("select mortgage rates & equity quotes*") %>% toupper()) %>% 
+  tab_footnote(html("<br>*quotes correspond to market close price.")) %>% 
+  fmt_date(columns = date,
+           date_style = "m_day_year") %>% 
+  fmt_percent(columns = 2:4,
+              decimals = 2,
+              scale_values = F) %>% 
+  fmt_currency(columns = 5:7,
+               currency = "USD",
+               use_subunits = T) %>% 
+  cols_label(date     = " ",
+             jumbo    = "30-Year Fixed Jumbo",
+             fha      = "30-Year Fixed FHA",
+             subprime = "30-Year Fixed Subprime",
+             AMH      = "American Homes 4 Rent (AMH)",
+             TCN      = "Tricon Residential (TCN)",
+             FMCC     = "Freddie Mac (FMCC)") %>% 
+  tab_spanner(label = "Mortgage Rates",
+              columns = 2:4) %>% 
+  tab_spanner(label = "Quotes",
+              columns = 5:7) %>% 
+  tab_style(style = cell_borders(
+    sides = "right",
+    color = "black",
+    weight = px(1.5),
+    style = "solid"
+  ),
+  locations = cells_body(
+    rows = everything(),
+    columns = c(1,4)
+  )) %>% 
+  gt_theme_538() %>% 
+  tab_options(column_labels.background.color = "#9BC2E6",
+              column_labels.font.weight = "bold",
+              footnotes.font.size = 9.5)
+```
+
+###Save as PNG & HTML
+
+```{r}
+gtsave_extra(macro_master_gt,"Macro Summary Simple.png")
+
+gtsave(macro_master_gt,"Macro Summary.html")
+
+macro_master_gt %>% as_raw_html()
+```
+
